@@ -1,0 +1,200 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>
+.\"
+.Dd November 10, 2026
+.Dt LIBWEBPUSH 3
+.Os
+.Sh NAME
+.Nm libwebpush ,
+.Nm webpush_encrypt ,
+.Nm webpush_vapid ,
+.Nm webpush_b64url ,
+.Nm webpush_unb64url
+.Nd Web Push message encryption and VAPID tokens
+.Sh LIBRARY
+Web Push Library
+.Pq libwebpush , Fl lwebpush Fl lcrypto
+.Sh SYNOPSIS
+.In webpush.h
+.Ft int
+.Fo webpush_encrypt
+.Fa "const uint8_t *ua_pub"
+.Fa "const uint8_t *auth"
+.Fa "EVP_PKEY *as_key"
+.Fa "const uint8_t *salt"
+.Fa "const uint8_t *plain"
+.Fa "size_t plen"
+.Fa "uint8_t **outp"
+.Fa "size_t *outlenp"
+.Fc
+.Ft char *
+.Fo webpush_vapid
+.Fa "EVP_PKEY *key"
+.Fa "const char *audience"
+.Fa "const char *sub"
+.Fa "time_t now"
+.Fc
+.Ft char *
+.Fn webpush_b64url "const void *data" "size_t len"
+.Ft uint8_t *
+.Fn webpush_unb64url "const char *s" "size_t *lenp"
+.Sh DESCRIPTION
+The
+.Nm
+library does the arithmetic of Web Push: it encrypts a message for one
+push subscription, as RFC 8291 has it with the
+.Dq aes128gcm
+content coding of RFC 8188, and makes the VAPID token of RFC 8292 that
+says who sends it.
+It speaks no HTTP: the caller posts the result to the subscription's
+endpoint with the headers
+.Ql Content-Encoding: aes128gcm ,
+.Ql TTL
+and the
+.Ql Authorization
+that
+.Fn webpush_vapid
+returns.
+It uses the
+.Xr crypto 3
+library of OpenSSL.
+.Pp
+.Fn webpush_encrypt
+encrypts the
+.Fa plen
+bytes at
+.Fa plain
+for the subscription whose public key
+.Pq its Dq p256dh
+is the
+.Dv WEBPUSH_KEYLEN
+(65) bytes of an uncompressed P-256 point at
+.Fa ua_pub
+and whose authentication secret is the
+.Dv WEBPUSH_AUTHLEN
+(16) bytes at
+.Fa auth .
+.Fa as_key
+is the sender's P-256 key for this message and
+.Fa salt
+its
+.Dv WEBPUSH_SALTLEN
+(16) bytes of salt; when either is
+.Dv NULL ,
+as it should be outside a test, a new key or random salt is made for
+the message.
+The message is one record of record size 4096; its body, the header of
+RFC 8188 then the record, is returned in
+.Pf * Fa outp ,
+to be freed with
+.Xr free 3 ,
+and its length in
+.Pf * Fa outlenp .
+A message is at most
+.Dv WEBPUSH_MAXLEN
+(3993) bytes, so that the body is at most the 4096 bytes every push
+service takes.
+.Pp
+.Fn webpush_vapid
+returns the value of the
+.Ql Authorization
+header for a push to the push service at
+.Fa audience ,
+the origin of the subscription's endpoint
+.Pq Dq https://host ,
+signed with the application server's P-256
+.Fa key :
+.Dq vapid t= Ns Ar JWT Ns Dq ", k=" Ns Ar key .
+The JWT's
+.Dq sub
+claim is
+.Fa sub ,
+a
+.Dq mailto:
+or
+.Dq https:
+URI by which the push service may reach the sender, and it expires 12
+hours after
+.Fa now .
+The caller frees the string.
+.Pp
+.Fn webpush_b64url
+returns
+.Fa len
+bytes of
+.Fa data
+in base64url without padding, as subscriptions, keys and tokens are
+written.
+.Fn webpush_unb64url
+returns the bytes of the base64url string
+.Fa s ,
+padded or not, and stores their number in
+.Pf * Fa lenp ;
+the buffer, which the caller frees, has a byte to spare past them.
+.Sh RETURN VALUES
+.Fn webpush_encrypt
+returns 0 on success and \-1 when the message is too long, the
+subscription's key is not a P-256 point, or OpenSSL or the memory
+fails.
+.Fn webpush_vapid ,
+.Fn webpush_b64url
+and
+.Fn webpush_unb64url
+return
+.Dv NULL
+on failure;
+.Fn webpush_unb64url
+also when
+.Fa s
+is not base64url, and
+.Fn webpush_vapid
+when its claims would be longer than 511 bytes.
+.Sh EXAMPLES
+A subscription as the browser's
+.Fn PushSubscription.toJSON
+gives it, its keys in base64url, encrypted for and signed for:
+.Bd -literal -offset indent
+uint8_t *ua, *auth, *body;
+size_t len, ualen, authlen;
+char *hdr;
+
+ua = webpush_unb64url(p256dh, &ualen);
+auth = webpush_unb64url(authsecret, &authlen);
+if (ua == NULL || ualen != WEBPUSH_KEYLEN ||
+    auth == NULL || authlen != WEBPUSH_AUTHLEN)
+	errx(1, "not a subscription");
+if (webpush_encrypt(ua, auth, NULL, NULL, msg, strlen(msg),
+    &body, &len) != 0)
+	errx(1, "webpush_encrypt");
+if ((hdr = webpush_vapid(vapid_key, "https://push.example.net",
+    "mailto:admin@example.org", time(NULL))) == NULL)
+	errx(1, "webpush_vapid");
+/* POST body, len bytes, with Authorization: hdr,
+ * Content-Encoding: aes128gcm and TTL. */
+.Ed
+.Sh SEE ALSO
+.Xr crypto 3 ,
+.Xr EVP_PKEY_Q_keygen 3
+.Rs
+.%A M. Thomson
+.%T Encrypted Content-Encoding for HTTP
+.%R RFC 8188
+.%D June 2017
+.Re
+.Rs
+.%A M. Thomson
+.%T Message Encryption for Web Push
+.%R RFC 8291
+.%D November 2017
+.Re
+.Rs
+.%A M. Thomson
+.%A P. Beverloo
+.%T Voluntary Application Server Identification (VAPID) for Web Push
+.%R RFC 8292
+.%D November 2017
+.Re
+.Sh AUTHORS
+.An Pouria Mousavizadeh Tehrani Aq Mt pouria@FreeBSD.org
